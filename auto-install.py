@@ -40,12 +40,21 @@ if __name__ == "__main__":
                         help='temporary directory used during the install (default: /tmp/veloc)')
     parser.add_argument('prefix',
                         help='installation path prefix (typically a home directory)')
+    parser.add_argument('statediff',
+                        help='installation directory of statediff')
+    parser.add_argument('kokkos_dir',
+                        help='installation directory of kokkos')
     parser.add_argument('extra_cmake_args', nargs='*',
                         help='additional cmake arguments to pass to configure')
     args = parser.parse_args()
     args.prefix = os.path.abspath(args.prefix)
+    args.statediff = os.path.abspath(args.statediff)
+    args.kokkosdir = os.path.abspath(args.kokkos_dir)
     if not os.path.isdir(args.prefix):
         print("Installation prefix {0} is not a valid directory!".format(args.prefix))
+        sys.exit(1)
+    if not os.path.isdir(args.statediff):
+        print("Statediff installation directory {0} is not a valid directory!".format(args.statediff))
         sys.exit(1)
     if os.path.isdir(args.temp):
         print("Installation temporary directory {0} already exists, please remove and/or specify a different one!".format(args.temp))
@@ -99,6 +108,8 @@ if __name__ == "__main__":
 
     # Construct the fulls et of CMake arguments
     cmake_args= ['-DCMAKE_INSTALL_PREFIX='+args.prefix,
+                 '-Dstatediff_DIR='+args.statediff,
+                 '-DKokkos_DIR='+args.kokkosdir,
                  '-DCMAKE_BUILD_TYPE='+cmake_build_type,
                  '-DCOMM_QUEUE='+args.protocol,
                  '-DPOSIX_IO='+args.posix_io] + compiler_options + args.extra_cmake_args

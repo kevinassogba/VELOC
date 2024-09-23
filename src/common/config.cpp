@@ -117,6 +117,7 @@ std::string config_t::env_param(const std::string &param) {
 template bool config_t::get_optional<std::string>(const std::string &param, std::string &value) const;
 template bool config_t::get_optional<int>(const std::string &param, int &value) const;
 template bool config_t::get_optional<unsigned int>(const std::string &param, unsigned int &value) const;
+template bool config_t::get_optional<double>(const std::string &param, double &value) const;
 
 template <class T> bool config_t::get_optional(const std::string &param, T &value) const {
     auto ret = env_param(param);

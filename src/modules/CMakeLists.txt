@@ -3,7 +3,7 @@ add_library (veloc-modules SHARED
   # simple modules
   client_watchdog.cpp transfer_module.cpp chksum_module.cpp versioning_module.cpp
   # aggregation modules
-  client_aggregator.cpp ec_module.cpp
+  client_aggregator.cpp ec_module.cpp statediff_module.cpp
   # storage modules
   ${PROJECT_SOURCE_DIR}/src/storage/storage_module.cpp
   ${PROJECT_SOURCE_DIR}/src/storage/posix_module.cpp
@@ -15,9 +15,15 @@ add_library (veloc-modules SHARED
   ${PROJECT_SOURCE_DIR}/src/common/ckpt_util.cpp
 )
 
+# statediff
+find_package(statediff REQUIRED PATHS ${statediff_DIR})
+get_target_property(STATEDIFF_INC_DIRS statediff::statediff INTERFACE_INCLUDE_DIRECTORIES)
+# message(STATUS "Statediff include directories: ${TARGET_INFO}")
+include_directories(${STATEDIFF_INC_DIRS})
+
 add_library (veloc::modules ALIAS veloc-modules)
 
-target_link_libraries (veloc-modules PUBLIC MPI::MPI_CXX er::er OpenSSL::Crypto)
+target_link_libraries (veloc-modules PUBLIC MPI::MPI_CXX er::er OpenSSL::Crypto statediff::statediff)
 
 if (axl_FOUND)
   target_sources (veloc-modules PRIVATE  ${PROJECT_SOURCE_DIR}/src/storage/axl_module.cpp)

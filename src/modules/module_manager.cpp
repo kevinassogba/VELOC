@@ -25,6 +25,8 @@ void module_manager_t::add_default(const config_t &cfg, MPI_Comm comm) {
     add_module([this](const command_t &c) { return chksum->process_command(c); });
     versioning = new versioning_module_t(cfg);
     add_module([this](const command_t &c) { return versioning->process_command(c); });
+    statediff = new statediff_module_t(cfg);
+    add_module([this](const command_t &c) { return statediff->process_command(c); });
 }
 
 module_manager_t::~module_manager_t() {
@@ -34,6 +36,7 @@ module_manager_t::~module_manager_t() {
     delete transfer;
     delete chksum;
     delete versioning;
+    delete statediff;
 }
 
 int module_manager_t::notify_command(const command_t &c) {

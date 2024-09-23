@@ -10,6 +10,7 @@
 #include "modules/transfer_module.hpp"
 #include "modules/chksum_module.hpp"
 #include "modules/versioning_module.hpp"
+#include "modules/statediff_module.hpp"
 
 #include <functional>
 #include <vector>
@@ -25,6 +26,7 @@ class module_manager_t {
     ec_module_t *redset = NULL;
     chksum_module_t *chksum = NULL;
     versioning_module_t *versioning = NULL;
+    statediff_module_t *statediff = NULL;
 
 public:
     module_manager_t();
