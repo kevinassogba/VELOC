@@ -2,9 +2,9 @@
 
 statediff_module_t::statediff_module_t(const config_t &c) : cfg(c) {
     active = cfg.get_bool("statediff", false);
-    if (active && !check_dir(cfg.get("reference"))) {
+    if (active && !check_dir(cfg.get("persistent"))) {
         ERROR("Reference directory "
-              << cfg.get("reference")
+              << cfg.get("persistent")
               << " inaccessible. Statediff deactivated!");
         active = false;
     }
@@ -48,12 +48,14 @@ get_file_size(const std::string &filename, off_t *size) {
 
 int
 statediff_module_t::process_command(const command_t &c) {
-    if (!active)
+    if (!active) {
+        INFO("Statediff is inactive");
         return VELOC_IGNORED;
+    }
 
     switch (c.command) {
     case command_t::CHECKPOINT: {
-        std::string reference = c.filename(cfg.get("reference")),
+        std::string reference = c.prev_filename(cfg.get("persistent")),
                     local = c.filename(cfg.get("scratch"));
         io_uring_stream_t<float> reader_prev(reference,
                                              chunk_size / sizeof(float));
@@ -61,11 +63,14 @@ statediff_module_t::process_command(const command_t &c) {
         // To-Do:
         // 1- Make sure we properly handle floating-point and integer data
         // 2- Stream data to the GPU for hashing
-
+        INFO("Reference file " << reference);
+        INFO("Current file " << local);
         off_t filesize;
         std::vector<uint8_t> data_prev, data_curr;
         get_file_size(local, &filesize);
         size_t data_size = static_cast<size_t>(filesize);
+        // read_file(reference, unsigned char *buffer, ssize_t size)
+        // read_file(const std::string &source, unsigned char *buffer, ssize_t size)
         load_data(reference, data_prev, data_size);
         load_data(local, data_curr, data_size);
 
@@ -78,8 +83,9 @@ statediff_module_t::process_command(const command_t &c) {
         client_prev.create(data_prev.data());
         client_curr.create(data_curr.data());
         client_curr.compare_with(client_prev);
-        return client_curr.get_num_changes() == 0 ? VELOC_SUCCESS
-                                                  : VELOC_FAILURE;
+        INFO("Statediff reproducibility analysis completed with "
+             << client_curr.get_num_changes() << " changes.");
+        return VELOC_SUCCESS;
     }
     case command_t::RESTART:
         return VELOC_IGNORED;

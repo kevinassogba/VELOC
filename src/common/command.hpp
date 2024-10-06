@@ -23,7 +23,9 @@ public:
     command_t(int r, int c, int v, const std::string &src);
     void assign_path(const std::string &src);
     std::string stem() const;
+    std::string stem(int prev_chkpt_id) const;
     std::string filename(const std::string &prefix) const;
+    std::string prev_filename(const std::string &prefix) const;
     std::string meta_filename(const std::string &prefix) const;
     std::string agg_filename(const std::string &prefix) const;
     friend std::ostream &operator<<(std::ostream &output, const command_t &c);

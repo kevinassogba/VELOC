@@ -23,6 +23,11 @@ std::string command_t::stem() const {
         "-" + std::to_string(version) + ".dat";
 }
 
+std::string command_t::stem(int prev_chkpt_id) const {
+    return std::string(name) + "-" + std::to_string(prev_chkpt_id) +
+        "-" + std::to_string(version) + ".dat";
+}
+
 std::regex command_t::regex(const std::string &cname) {
     return std::regex(cname + "-([0-9]+|ec|agg)-([0-9]+).*");
 }
@@ -44,6 +49,11 @@ bool command_t::match(const std::string &str, const std::regex &ex, int &id, int
 
 std::string command_t::filename(const std::string &prefix) const {
     return prefix + "/" + stem();
+}
+
+std::string command_t::prev_filename(const std::string &prefix) const {
+    int prev_chkpt_id = unique_id - 1;
+    return prefix + "/" + stem(prev_chkpt_id);
 }
 
 std::string command_t::meta_filename(const std::string &prefix) const {

@@ -6,7 +6,7 @@
 #include "common/file_util.hpp"
 #include "common/status.hpp"
 #include "statediff.hpp"
-#include "readers/io_uring_stream.hpp"
+#include "io_uring_stream.hpp"
 #include <fcntl.h>
 #include <openssl/sha.h>
 #include <sys/mman.h>
@@ -15,7 +15,8 @@
 #include <unistd.h>
 
 #define __DEBUG
-#include "common/debug.hpp"
+
+using namespace state_diff;
 
 class statediff_module_t {
     const config_t &cfg;
