@@ -18,7 +18,6 @@ add_library (veloc-modules SHARED
 # statediff
 find_package(statediff REQUIRED PATHS ${statediff_DIR})
 get_target_property(STATEDIFF_INC_DIRS statediff::statediff INTERFACE_INCLUDE_DIRECTORIES)
-# message(STATUS "Statediff include directories: ${TARGET_INFO}")
 include_directories(${STATEDIFF_INC_DIRS})
 
 add_library (veloc::modules ALIAS veloc-modules)

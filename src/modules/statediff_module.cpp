@@ -2,9 +2,9 @@
 
 statediff_module_t::statediff_module_t(const config_t &c) : cfg(c) {
     active = cfg.get_bool("statediff", false);
-    if (active && !check_dir(cfg.get("persistent"))) {
+    if (active && !check_dir(cfg.get("reference"))) {
         ERROR("Reference directory "
-              << cfg.get("persistent")
+              << cfg.get("reference")
               << " inaccessible. Statediff deactivated!");
         active = false;
     }
@@ -14,6 +14,52 @@ statediff_module_t::statediff_module_t(const config_t &c) : cfg(c) {
     cfg.get_optional("diff_chunksize", chunk_size);
     cfg.get_optional("diff_dtype", data_type);
     INFO("Reproducibility analysis active: " << active);
+    if (!Kokkos::is_initialized()) {
+        Kokkos::initialize();
+        DBG("Kokkos Initialized");
+    }
+}
+
+statediff_module_t::~statediff_module_t() {
+    delete local_reader;
+    delete local_client;
+    delete prev_reader;
+    delete prev_client;
+    if (!Kokkos::is_finalized()) {
+        Kokkos::finalize();
+        DBG("Kokkos Finalized");
+    }
+}
+
+size_t
+read_chkpt(const std::string &filename, std::vector<uint8_t> &buffer) {
+    std::ifstream basefile;
+    basefile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    basefile.open(filename, std::ifstream::in | std::ifstream::binary);
+
+    int id;
+    size_t num_regions, region_size, expected_size = 0;
+    std::map<int, size_t> region_info;
+
+    basefile.read(reinterpret_cast<char *>(&num_regions), sizeof(size_t));
+    for (uint32_t i = 0; i < num_regions; i++) {
+        basefile.read(reinterpret_cast<char *>(&id), sizeof(int));
+        basefile.read(reinterpret_cast<char *>(&region_size), sizeof(size_t));
+        expected_size += region_size;
+    }
+    size_t header_size = basefile.tellg();
+    basefile.seekg(0, basefile.end);
+    size_t file_size = static_cast<size_t>(basefile.tellg()) - header_size;
+    if (file_size != expected_size) {
+        std::cerr << "File size " << file_size
+                  << " does not match expected size " << expected_size
+                  << std::endl;
+    }
+    buffer.resize(expected_size);
+    basefile.seekg(header_size);
+    basefile.read(reinterpret_cast<char *>(buffer.data()), expected_size);
+    basefile.close();
+    return expected_size;
 }
 
 static void
@@ -48,43 +94,70 @@ get_file_size(const std::string &filename, off_t *size) {
 
 int
 statediff_module_t::process_command(const command_t &c) {
-    if (!active) {
-        INFO("Statediff is inactive");
-        return VELOC_IGNORED;
-    }
 
     switch (c.command) {
     case command_t::CHECKPOINT: {
-        std::string reference = c.prev_filename(cfg.get("persistent")),
-                    local = c.filename(cfg.get("scratch"));
-        io_uring_stream_t<float> reader_prev(reference,
-                                             chunk_size / sizeof(float));
-        io_uring_stream_t<float> reader_curr(local, chunk_size / sizeof(float));
-        // To-Do:
-        // 1- Make sure we properly handle floating-point and integer data
-        // 2- Stream data to the GPU for hashing
-        INFO("Reference file " << reference);
-        INFO("Current file " << local);
-        off_t filesize;
-        std::vector<uint8_t> data_prev, data_curr;
-        get_file_size(local, &filesize);
-        size_t data_size = static_cast<size_t>(filesize);
-        // read_file(reference, unsigned char *buffer, ssize_t size)
-        // read_file(const std::string &source, unsigned char *buffer, ssize_t size)
-        load_data(reference, data_prev, data_size);
-        load_data(local, data_curr, data_size);
+        std::string current_file = cfg.get("scratch");
+        std::string local = c.filename(current_file);
+        local_reader =
+            new io_uring_stream_t<float>(local, chunk_size / sizeof(float));
+        std::vector<uint8_t> local_data;
+        TIMER_START(local_loader);
+        size_t data_size = read_chkpt(local, local_data);
+        TIMER_STOP(local_loader, "loaded " << local << " to host memory");
 
-        state_diff::client_t<float, io_uring_stream_t> client_prev(
-            0, reader_prev, data_size, error_tolerance, data_type[0],
+        // Initialize client, create tree for checkpoint
+        // INFO("Statediff: Processing file " << local);
+        local_client = new state_diff::client_t<float, io_uring_stream_t>(
+            0, *local_reader, data_size, error_tolerance, data_type[0],
             chunk_size, start_level, fuzzy_hash);
-        state_diff::client_t<float, io_uring_stream_t> client_curr(
-            1, reader_curr, data_size, error_tolerance, data_type[0],
-            chunk_size, start_level, fuzzy_hash);
-        client_prev.create(data_prev.data());
-        client_curr.create(data_curr.data());
-        client_curr.compare_with(client_prev);
-        INFO("Statediff reproducibility analysis completed with "
-             << client_curr.get_num_changes() << " changes.");
+
+        TIMER_START(tree_creation);
+        local_client->create(local_data.data());
+        TIMER_STOP(tree_creation, "metadata created");
+
+        // Serialize tree for checkpoint
+        std::string local_meta = c.state_filename(cfg.get("persistent"));
+        // INFO("Statediff: Serializing metadata to " << local_meta);
+        TIMER_START(tree_ser);
+        std::ofstream ofs(local_meta, std::ios::binary);
+        cereal::BinaryOutputArchive oa(ofs);
+        oa(*local_client);
+        ofs.close();
+        TIMER_STOP(tree_ser, "metadata serialized to " << local_meta);
+
+        // If statediff params is set, proceed to comparison
+        if (active) {
+            // Initialize client for previous run
+            std::string prev_file = cfg.get("reference");
+            std::string prev_data = c.filename(prev_file);
+            std::string prev_meta = c.state_filename(prev_file);
+
+            INFO("Statediff: Comparing " << local << " with " << prev_data);
+            prev_reader = new io_uring_stream_t<float>(
+                prev_data, chunk_size / sizeof(float));
+            prev_client = new state_diff::client_t<float, io_uring_stream_t>(
+                1, *prev_reader, data_size, error_tolerance, data_type[0],
+                chunk_size, start_level, fuzzy_hash);
+
+            // Deserialize tree of previous run
+            TIMER_START(tree_deser);
+            std::ifstream ifs(prev_meta, std::ios::binary);
+            cereal::BinaryInputArchive ia(ifs);
+            ia(*prev_client);
+            ifs.close();
+            TIMER_STOP(tree_deser, "metadata deserialized from " << prev_meta);
+
+            // Compare both runs checkpoints
+            INFO("Statediff: Info (" << local_client->get_client_info()
+                                     << ") VS ("
+                                     << prev_client->get_client_info() << ")");
+            TIMER_START(compare);
+            local_client->compare_with(*prev_client);
+            TIMER_STOP(compare, "checkpoint comparison completed");
+            INFO("Statediff: Reproducibility analysis completed with "
+                 << local_client->get_num_changes() << " changes.");
+        }
         return VELOC_SUCCESS;
     }
     case command_t::RESTART:

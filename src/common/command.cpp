@@ -60,6 +60,10 @@ std::string command_t::meta_filename(const std::string &prefix) const {
     return filename(prefix) + ".chksum";
 }
 
+std::string command_t::state_filename(const std::string &prefix) const {
+    return filename(prefix) + ".tree";
+}
+
 std::string command_t::agg_filename(const std::string &prefix) const {
     return prefix + "/" + std::string(name) + "-agg-" + std::to_string(version) + ".dat";
 }

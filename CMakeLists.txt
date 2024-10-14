@@ -4,7 +4,8 @@ project (VELOC VERSION 1.6)
 ##### Global settings
 include(GNUInstallDirs)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
-add_definitions(-O2 -g -Wall -D__BENCHMARK -D__ASSERT -D__INFO)
+# add_definitions(-O2 -g -Wall -D__BENCHMARK -D__ASSERT -D__INFO)
+add_definitions(-g -Wall -D__BENCHMARK -D__ASSERT -D__INFO)
 set(CMAKE_CXX_STANDARD 17)
 
 ##### Configuration setting
@@ -50,6 +51,9 @@ find_package(MPI REQUIRED)
 
 # ER
 find_package(er REQUIRED)
+
+# KOKKOS
+find_package(Kokkos REQUIRED)
 
 # AXL
 find_package(axl)
