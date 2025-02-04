@@ -15,7 +15,7 @@ statediff_module_t::statediff_module_t(const config_t &c) : cfg(c) {
     cfg.get_optional("diff_dtype", data_type);
     INFO("Reproducibility analysis active: " << active);
     if (!Kokkos::is_initialized()) {
-        Kokkos::initialize();
+        Kokkos::initialize(Kokkos::InitializationSettings().set_num_threads(8));
         DBG("Kokkos Initialized");
     }
 }
@@ -62,41 +62,10 @@ read_chkpt(const std::string &filename, std::vector<uint8_t> &buffer) {
     return expected_size;
 }
 
-static void
-load_data(const std::string &filename, std::vector<uint8_t> &buffer,
-          size_t data_size) {
-    int fd = open(filename.c_str(), O_RDONLY, 0644);
-    if (fd == -1) {
-        FATAL("cannot open " << filename << ", error = " << strerror(errno));
-    }
-    size_t transferred = 0, remaining = data_size;
-    while (remaining > 0) {
-        auto ret = read(fd, buffer.data() + transferred, remaining);
-        remaining -= ret;
-        transferred += ret;
-    }
-    fsync(fd);
-    close(fd);
-}
-
-int
-get_file_size(const std::string &filename, off_t *size) {
-    struct stat st;
-
-    if (stat(filename.c_str(), &st) < 0)
-        return -1;
-    if (S_ISREG(st.st_mode)) {
-        *size = st.st_size;
-        return 0;
-    }
-    return -1;
-}
-
 int
 statediff_module_t::process_command(const command_t &c) {
 
-    switch (c.command) {
-    case command_t::CHECKPOINT: {
+    if (c.command == command_t::CHECKPOINT) {
         std::string current_file = cfg.get("scratch");
         std::string local = c.filename(current_file);
         local_reader =
@@ -107,7 +76,6 @@ statediff_module_t::process_command(const command_t &c) {
         TIMER_STOP(local_loader, "loaded " << local << " to host memory");
 
         // Initialize client, create tree for checkpoint
-        // INFO("Statediff: Processing file " << local);
         local_client = new state_diff::client_t<float, io_uring_stream_t>(
             0, *local_reader, data_size, error_tolerance, data_type[0],
             chunk_size, start_level, fuzzy_hash);
@@ -118,7 +86,6 @@ statediff_module_t::process_command(const command_t &c) {
 
         // Serialize tree for checkpoint
         std::string local_meta = c.state_filename(cfg.get("persistent"));
-        // INFO("Statediff: Serializing metadata to " << local_meta);
         TIMER_START(tree_ser);
         std::ofstream ofs(local_meta, std::ios::binary);
         cereal::BinaryOutputArchive oa(ofs);
@@ -159,11 +126,7 @@ statediff_module_t::process_command(const command_t &c) {
                  << local_client->get_num_changes() << " changes.");
         }
         return VELOC_SUCCESS;
-    }
-    case command_t::RESTART:
-        return VELOC_IGNORED;
-
-    default:
+    } else {
         return VELOC_IGNORED;
     }
 }

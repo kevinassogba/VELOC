@@ -77,7 +77,8 @@ main(int argc, char *argv[]) {
     if (ec_active) {
         MPI_Init(&argc, &argv);
         if (!Kokkos::is_initialized()) {
-            Kokkos::initialize(argc, argv);
+            Kokkos::initialize(Kokkos::InitializationSettings()
+                       .set_num_threads(8));
             INFO("Kokkos Initialized");
         }
         start_main_loop(cfg, MPI_COMM_WORLD);
@@ -97,7 +98,9 @@ main(int argc, char *argv[]) {
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
         if (!Kokkos::is_initialized()) {
-            Kokkos::initialize(argc, argv);
+            // Kokkos::initialize(argc, argv);
+            Kokkos::initialize(Kokkos::InitializationSettings()
+                       .set_num_threads(8));
             INFO("Kokkos Initialized");
         }
         start_main_loop(cfg, MPI_COMM_NULL);
