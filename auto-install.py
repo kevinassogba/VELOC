@@ -53,8 +53,8 @@ if __name__ == "__main__":
     if not os.path.isdir(args.prefix):
         print("Installation prefix {0} is not a valid directory!".format(args.prefix))
         sys.exit(1)
-    if not os.path.isdir(args.statediff):
-        print("Statediff installation directory {0} is not a valid directory!".format(args.statediff))
+    if not os.path.isdir(args.statediff+"/build"):
+        print("Statediff installation directory {0} is not a valid directory!".format(args.statediff+"/build"))
         sys.exit(1)
     if os.path.isdir(args.temp):
         print("Installation temporary directory {0} already exists, please remove and/or specify a different one!".format(args.temp))
@@ -108,10 +108,11 @@ if __name__ == "__main__":
 
     # Construct the fulls et of CMake arguments
     cmake_args= ['-DCMAKE_INSTALL_PREFIX='+args.prefix,
-                 '-Dstatediff_DIR='+args.statediff,
+                 '-Dstatediff_DIR='+args.statediff+"/build",
                  '-DKokkos_DIR='+args.kokkosdir,
                  '-DCMAKE_BUILD_TYPE='+cmake_build_type,
                  '-DCOMM_QUEUE='+args.protocol,
+                 '-DCMAKE_MODULE_PATH='+args.statediff+"/cmake",
                  '-DPOSIX_IO='+args.posix_io] + compiler_options + args.extra_cmake_args
     # Configure
     print("CMake arguments: " + " ".join(cmake_args))

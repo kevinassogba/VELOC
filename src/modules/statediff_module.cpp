@@ -1,132 +1,166 @@
 #include "statediff_module.hpp"
 
 statediff_module_t::statediff_module_t(const config_t &c) : cfg(c) {
-    active = cfg.get_bool("statediff", false);
-    if (active && !check_dir(cfg.get("reference"))) {
+    compare = cfg.get_bool("statediff", false);
+    debug_log.open("statediff.out", std::ios::out | std::ios::app);
+    if (compare && !check_dir(cfg.get("reference"))) {
         ERROR("Reference directory "
               << cfg.get("reference")
               << " inaccessible. Statediff deactivated!");
-        active = false;
+        compare = false;
+        debug_log << "[ERROR] Unable to verify that reference file exists"
+                  << std::endl;
     }
     fuzzy_hash = cfg.get_bool("diff_fuzzy", true);
     cfg.get_optional("diff_error", error_tolerance);
     cfg.get_optional("diff_start", start_level);
     cfg.get_optional("diff_chunksize", chunk_size);
     cfg.get_optional("diff_dtype", data_type);
-    INFO("Reproducibility analysis active: " << active);
+    debug_log << "[INFO] Reproducibility comparison active: " << compare
+              << std::endl;
     if (!Kokkos::is_initialized()) {
-        Kokkos::initialize(Kokkos::InitializationSettings().set_num_threads(8));
+        uint32_t num_threads = std::thread::hardware_concurrency();
+        Kokkos::initialize(
+            Kokkos::InitializationSettings().set_num_threads(num_threads));
         DBG("Kokkos Initialized");
     }
 }
 
 statediff_module_t::~statediff_module_t() {
-    delete local_reader;
-    delete local_client;
-    delete prev_reader;
-    delete prev_client;
     if (!Kokkos::is_finalized()) {
         Kokkos::finalize();
         DBG("Kokkos Finalized");
     }
 }
 
-size_t
-read_chkpt(const std::string &filename, std::vector<uint8_t> &buffer) {
-    std::ifstream basefile;
-    basefile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-    basefile.open(filename, std::ifstream::in | std::ifstream::binary);
-
-    int id;
-    size_t num_regions, region_size, expected_size = 0;
-    std::map<int, size_t> region_info;
-
-    basefile.read(reinterpret_cast<char *>(&num_regions), sizeof(size_t));
-    for (uint32_t i = 0; i < num_regions; i++) {
-        basefile.read(reinterpret_cast<char *>(&id), sizeof(int));
-        basefile.read(reinterpret_cast<char *>(&region_size), sizeof(size_t));
-        expected_size += region_size;
-    }
-    size_t header_size = basefile.tellg();
-    basefile.seekg(0, basefile.end);
-    size_t file_size = static_cast<size_t>(basefile.tellg()) - header_size;
-    if (file_size != expected_size) {
-        std::cerr << "File size " << file_size
-                  << " does not match expected size " << expected_size
-                  << std::endl;
-    }
-    buffer.resize(expected_size);
-    basefile.seekg(header_size);
-    basefile.read(reinterpret_cast<char *>(buffer.data()), expected_size);
-    basefile.close();
-    return expected_size;
-}
-
 int
 statediff_module_t::process_command(const command_t &c) {
-
     if (c.command == command_t::CHECKPOINT) {
-        std::string current_file = cfg.get("scratch");
-        std::string local = c.filename(current_file);
-        local_reader =
-            new io_uring_stream_t<float>(local, chunk_size / sizeof(float));
-        std::vector<uint8_t> local_data;
-        TIMER_START(local_loader);
-        size_t data_size = read_chkpt(local, local_data);
-        TIMER_STOP(local_loader, "loaded " << local << " to host memory");
+        std::string scratch_dir = cfg.get("scratch");
+        std::string current_ckpt = c.filename(scratch_dir);
+        std::string prev_ckpt = "";
+        size_t diff_count = 0;
 
-        // Initialize client, create tree for checkpoint
-        local_client = new state_diff::client_t<float, io_uring_stream_t>(
-            0, *local_reader, data_size, error_tolerance, data_type[0],
-            chunk_size, start_level, fuzzy_hash);
+        std::map<int, size_t> region_info;
+        size_t data_size = static_cast<size_t>(
+            file_size(current_ckpt) - read_header(current_ckpt,
+            region_info));
+        local_client.initialize(0, data_size, error_tolerance, data_type[0],
+                                chunk_size, start_level, fuzzy_hash);
+        liburing_io_reader_t local_reader(current_ckpt);
+        local_client.create(local_reader);
+        {
+            std::string local_meta = c.state_filename(cfg.get("persistent"));
+            std::ofstream ofs(local_meta, std::ios::binary);
+            cereal::BinaryOutputArchive oa(ofs);
+            oa(local_client);
+            ofs.close();
+        }
+        debug_log << "[INFO] Current client tree created!" << std::endl;
 
-        TIMER_START(tree_creation);
-        local_client->create(local_data.data());
-        TIMER_STOP(tree_creation, "metadata created");
-
-        // Serialize tree for checkpoint
-        std::string local_meta = c.state_filename(cfg.get("persistent"));
-        TIMER_START(tree_ser);
-        std::ofstream ofs(local_meta, std::ios::binary);
-        cereal::BinaryOutputArchive oa(ofs);
-        oa(*local_client);
-        ofs.close();
-        TIMER_STOP(tree_ser, "metadata serialized to " << local_meta);
-
-        // If statediff params is set, proceed to comparison
-        if (active) {
-            // Initialize client for previous run
-            std::string prev_file = cfg.get("reference");
-            std::string prev_data = c.filename(prev_file);
-            std::string prev_meta = c.state_filename(prev_file);
-
-            INFO("Statediff: Comparing " << local << " with " << prev_data);
-            prev_reader = new io_uring_stream_t<float>(
-                prev_data, chunk_size / sizeof(float));
-            prev_client = new state_diff::client_t<float, io_uring_stream_t>(
-                1, *prev_reader, data_size, error_tolerance, data_type[0],
-                chunk_size, start_level, fuzzy_hash);
-
-            // Deserialize tree of previous run
-            TIMER_START(tree_deser);
-            std::ifstream ifs(prev_meta, std::ios::binary);
-            cereal::BinaryInputArchive ia(ifs);
-            ia(*prev_client);
-            ifs.close();
-            TIMER_STOP(tree_deser, "metadata deserialized from " << prev_meta);
-
-            // Compare both runs checkpoints
-            INFO("Statediff: Info (" << local_client->get_client_info()
-                                     << ") VS ("
-                                     << prev_client->get_client_info() << ")");
-            TIMER_START(compare);
-            local_client->compare_with(*prev_client);
-            TIMER_STOP(compare, "checkpoint comparison completed");
-            INFO("Statediff: Reproducibility analysis completed with "
-                 << local_client->get_num_changes() << " changes.");
+        if (compare) {
+            std::string reference_dir = cfg.get("reference");
+            prev_ckpt = c.filename(reference_dir);
+            debug_log << "[INFO] Comparing " << current_ckpt << " with "
+                      << prev_ckpt << std::endl;
+            {
+                std::string prev_meta = c.state_filename(reference_dir);
+                std::ifstream ifs(prev_meta, std::ios::binary);
+                cereal::BinaryInputArchive ia(ifs);
+                ia(prev_client);
+                ifs.close();
+            }
+            liburing_io_reader_t prev_reader(prev_ckpt);
+            debug_log << "[INFO] Ready for comparisons!" << std::endl;
+            local_client.compare_with(0, local_reader, prev_client,
+                                      prev_reader);
+            diff_count = local_client.get_num_changes();
+            debug_log << "[INFO] Reproducibility analysis completed with "
+                      << diff_count << " changes." << std::endl;
+        }
+        // Write logs
+        std::string csv_filename = "diff_log.csv";
+        bool file_exists = std::filesystem::exists(csv_filename);
+        std::ofstream csv_out(csv_filename, std::ios::app);
+        if (csv_out.is_open()) {
+            if (!file_exists) {
+                csv_out << "prev_ckpt,current_ckpt,num_changes\n";
+            }
+            csv_out << prev_ckpt << "," << current_ckpt << "," << diff_count
+                    << "\n";
+            csv_out.close();
+        } else {
+            debug_log << "[ERROR] Failed to open diff_log.csv for writing."
+                      << std::endl;
         }
         return VELOC_SUCCESS;
     } else {
         return VELOC_IGNORED;
     }
 }
+
+// int
+// statediff_module_t::process_command(const command_t &c) {
+//     if (c.command == command_t::CHECKPOINT) {
+//             std::string scratch_dir = cfg.get("scratch");
+//             std::string current_ckpt = c.filename(scratch_dir);
+//             std::string prev_ckpt = "";
+//             size_t diff_count = 0;
+
+//             std::map<int, size_t> region_info;
+//             size_t data_size = static_cast<size_t>(
+//                 file_size(current_ckpt) - read_header(current_ckpt, region_info));
+//             local_client->initialize(0, data_size, error_tolerance, data_type[0],
+//                                     chunk_size, start_level, fuzzy_hash);
+//             liburing_io_reader_t local_reader_(current_ckpt);
+//             local_client->create(local_reader_);
+//             {
+//                 std::string local_meta = c.state_filename(cfg.get("persistent"));
+//                 std::ofstream ofs(local_meta, std::ios::binary);
+//                 cereal::BinaryOutputArchive oa(ofs);
+//                 oa(*local_client);
+//                 ofs.close();
+//             }
+//             debug_log << "[INFO] Current client tree created!" << std::endl;
+
+//             if (compare) {
+//                 std::string reference_dir = cfg.get("reference");
+//                 prev_ckpt = c.filename(reference_dir);
+//                 debug_log << "[INFO] Comparing " << current_ckpt << " with "
+//                         << prev_ckpt << std::endl;
+//                 {
+//                     std::string prev_meta = c.state_filename(reference_dir);
+//                     std::ifstream ifs(prev_meta, std::ios::binary);
+//                     cereal::BinaryInputArchive ia(ifs);
+//                     ia(*prev_client);
+//                     ifs.close();
+//                 }
+//                 liburing_io_reader_t prev_reader_(prev_ckpt);
+//                 debug_log << "[INFO] Ready for comparisons!" << std::endl;
+//                 local_client->compare_with(0, local_reader_, *prev_client,
+//                                         prev_reader_);
+//                 diff_count = local_client->get_num_changes();
+//                 debug_log << "[INFO] Reproducibility analysis completed with "
+//                         << diff_count << " changes." << std::endl;
+//             }
+//             // Write logs
+//             std::string csv_filename = "diff_log.csv";
+//             bool file_exists = std::filesystem::exists(csv_filename);
+//             std::ofstream csv_out(csv_filename, std::ios::app);
+//             if (csv_out.is_open()) {
+//                 if (!file_exists) {
+//                     csv_out << "prev_ckpt,current_ckpt,num_changes\n";
+//                 }
+//                 csv_out << prev_ckpt << "," << current_ckpt << "," << diff_count
+//                         << "\n";
+//                 csv_out.close();
+//             } else {
+//                 debug_log << "[ERROR] Failed to open diff_log.csv for writing."
+//                         << std::endl;
+//             }
+//             return VELOC_SUCCESS;
+//         }
+//         else {
+//             return VELOC_IGNORED;
+//         }
+// }

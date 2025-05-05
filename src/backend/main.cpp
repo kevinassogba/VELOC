@@ -14,6 +14,10 @@ bool ec_active = true;
 
 void
 user_handler(int signum) {
+    if (!Kokkos::is_finalized()) {
+        Kokkos::finalize();
+        INFO("Kokkos Finalized");
+    }
     _exit(0);
 }
 
@@ -74,11 +78,12 @@ main(int argc, char *argv[]) {
     }
 
     // start main loop: initialize MPI or fork into deamon mode if EC disabled
+    uint32_t num_threads = std::thread::hardware_concurrency();
     if (ec_active) {
         MPI_Init(&argc, &argv);
         if (!Kokkos::is_initialized()) {
             Kokkos::initialize(Kokkos::InitializationSettings()
-                       .set_num_threads(8));
+                       .set_num_threads(num_threads));
             INFO("Kokkos Initialized");
         }
         start_main_loop(cfg, MPI_COMM_WORLD);
@@ -100,7 +105,7 @@ main(int argc, char *argv[]) {
         if (!Kokkos::is_initialized()) {
             // Kokkos::initialize(argc, argv);
             Kokkos::initialize(Kokkos::InitializationSettings()
-                       .set_num_threads(8));
+                       .set_num_threads(num_threads));
             INFO("Kokkos Initialized");
         }
         start_main_loop(cfg, MPI_COMM_NULL);
